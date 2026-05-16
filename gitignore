@@ -1,0 +1,20 @@
+# Environment variables — never commit this
+.env
+
+# SQLite database — stays local or managed by GitHub Actions cache
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Daily digest HTML files — generated at runtime
+digest_*.html
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
