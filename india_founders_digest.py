@@ -94,7 +94,8 @@ def with_retry(fn, *args, label="operation", **kwargs):
         try:
             return fn(*args, **kwargs)
         except Exception as e:
-            wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
+            is_rate_limit = "429" in str(e) or "rate_limit" in str(e).lower()
+            wait = 65 if is_rate_limit else RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
             if attempt < MAX_RETRIES - 1:
                 log.warning(f"[{label}] attempt {attempt+1} failed: {e} — retrying in {wait}s")
                 time.sleep(wait)
