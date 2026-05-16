@@ -1,0 +1,46 @@
+name: India Founders Daily Digest
+
+on:
+  schedule:
+    - cron: '0 12 * * *'  # 4AM PST = 12PM UTC
+  workflow_dispatch:        # allows manual trigger from GitHub UI
+
+jobs:
+  run-digest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore database from cache
+        uses: actions/cache@v4
+        with:
+          path: founders_digest.db
+          key: founders-db-${{ github.run_number }}
+          restore-keys: |
+            founders-db-
+
+      - name: Run digest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+          RUNNING_IN_CLOUD: 'true'
+        run: python india_founders_digest.py
+
+      - name: Upload HTML digest as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ github.run_number }}
+          path: digest_*.html
+          retention-days: 30
