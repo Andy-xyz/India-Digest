@@ -59,7 +59,7 @@ EMAIL_RECIPIENT    = os.getenv("EMAIL_RECIPIENT", "Andyseac@gmail.com")
 RUNNING_IN_CLOUD   = os.getenv("RUNNING_IN_CLOUD", "false").lower() == "true"
 SEARCH_MODEL       = "claude-haiku-4-5-20251001"  # Haiku is ~15x cheaper than Opus for search/extraction
 LINKEDIN_MODEL     = "claude-haiku-4-5-20251001"
-LINKEDIN_BATCH_SIZE = 5  # founders per LinkedIn lookup call
+RATE_LIMIT_SLEEP   = 65  # seconds to wait after a large search call before the next API call
 MAX_RETRIES        = 3
 RETRY_BACKOFF      = [5, 15, 30]
 TARGET_COUNT       = 10           # must hit exactly this many with LinkedIn
@@ -338,50 +338,34 @@ def _parse_founders_json(response, required_fields: list) -> list:
 # ──────────────────────────────────────────────
 # Step 2: LinkedIn enrichment (hard requirement)
 # ──────────────────────────────────────────────
-def _do_linkedin_batch(batch: list) -> dict:
-    """Search LinkedIn for a batch of founders in one API call. Returns {index: url}."""
-    items = "\n".join(
-        f"{i+1}. {f['founder_name'].split(',')[0].strip()} — {f['company']}"
-        for i, f in enumerate(batch)
-    )
-    prompt = f"""Find LinkedIn profiles for these India-based startup founders. For each, search:
-- site:linkedin.com/in "<name>" "<company>"
-- "<name>" "<company>" founder linkedin india
+def _do_linkedin_search(name: str, company: str) -> str:
+    prompt = f"""Search Google for the LinkedIn profile of {name}, founder of {company} (India-based startup).
 
-Founders:
-{items}
+Try:
+- site:linkedin.com/in "{name}" "{company}"
+- "{name}" "{company}" founder linkedin india
 
-Return ONLY a JSON object mapping each number to its LinkedIn URL or "NOT_FOUND":
-{{"1": "https://linkedin.com/in/...", "2": "NOT_FOUND", ...}}
+Return ONLY the LinkedIn URL (https://linkedin.com/in/username) if you are confident it's the right person.
+If not found or uncertain, return: NOT_FOUND
 Nothing else."""
 
     response = client.messages.create(
         model=LINKEDIN_MODEL,
-        max_tokens=400,
+        max_tokens=150,
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
         messages=[{"role": "user", "content": prompt}],
     )
-    full_text = "".join(block.text for block in response.content if hasattr(block, "text"))
-    obj_match = re.search(r"\{[\s\S]*\}", full_text)
-    if not obj_match:
-        return {}
-    try:
-        raw = json.loads(obj_match.group())
-        result = {}
-        for k, v in raw.items():
-            if not isinstance(v, str) or v == "NOT_FOUND":
-                continue
-            m = re.search(r"https?://(?:www\.)?linkedin\.com/in/[^\s\"'><\)]+", v)
-            if m:
-                result[k] = m.group().rstrip("/.?,)")
-        return result
-    except json.JSONDecodeError:
-        return {}
+    for block in response.content:
+        if hasattr(block, "text"):
+            match = re.search(r"https?://(?:www\.)?linkedin\.com/in/[^\s\"'><\)]+", block.text)
+            if match:
+                return match.group().rstrip("/.?,)")
+    return ""
 
 
 def enrich_and_filter(candidates: list, already_confirmed: list) -> list:
     """
-    Try to find LinkedIn URLs for candidates in batches.
+    Try to find LinkedIn URLs for candidates one at a time.
     Returns only those with confirmed LinkedIn URLs.
     Skips anyone already in already_confirmed.
     """
@@ -389,55 +373,40 @@ def enrich_and_filter(candidates: list, already_confirmed: list) -> list:
         (f["founder_name"].lower().strip(), f["company"].lower().strip())
         for f in already_confirmed
     }
-
-    # Separate cached (already have URL) from those needing lookup
     results = []
-    need_lookup = []
+
     for f in candidates:
         key = (f["founder_name"].lower().strip(), f["company"].lower().strip())
         if key in confirmed_keys:
             continue
+
+        # Already has a LinkedIn URL (e.g. from backlog)
         if f.get("linkedin_url", "").strip():
             log.info(f"  {f['founder_name'][:35]:35s} → (cached) {f['linkedin_url']}")
             results.append(f)
             confirmed_keys.add(key)
-        else:
-            need_lookup.append(f)
+            continue
 
-        if len(already_confirmed) + len(results) >= TARGET_COUNT:
-            break
-
-    # Batch LinkedIn lookups — one API call per LINKEDIN_BATCH_SIZE founders
-    remaining_needed = TARGET_COUNT - len(already_confirmed) - len(results)
-    need_lookup = need_lookup[:remaining_needed]
-
-    for batch_start in range(0, len(need_lookup), LINKEDIN_BATCH_SIZE):
         if len(already_confirmed) + len(results) >= TARGET_COUNT:
             log.info("  Target count reached — stopping LinkedIn searches early.")
             break
 
-        batch = need_lookup[batch_start:batch_start + LINKEDIN_BATCH_SIZE]
-        log.info(f"  LinkedIn batch {batch_start // LINKEDIN_BATCH_SIZE + 1}: "
-                 f"{', '.join(f['founder_name'].split(',')[0].strip() for f in batch)}")
-
+        name = f["founder_name"].split(",")[0].strip()
         try:
-            urls = with_retry(_do_linkedin_batch, batch, label=f"li_batch_{batch_start}")
+            url = with_retry(_do_linkedin_search, name, f["company"], label=f"li:{name}")
         except Exception:
-            urls = {}
+            url = ""
 
-        for i, f in enumerate(batch):
-            url = urls.get(str(i + 1), "")
-            name = f["founder_name"].split(",")[0].strip()
-            if url:
-                f["linkedin_url"] = url
-                log.info(f"    {name[:35]:35s} → {url}")
-                results.append(f)
-                confirmed_keys.add((f["founder_name"].lower().strip(), f["company"].lower().strip()))
-            else:
-                log.info(f"    {name[:35]:35s} → no LinkedIn — skipping")
+        if url:
+            f["linkedin_url"] = url
+            log.info(f"  {name[:35]:35s} → {url}")
+            results.append(f)
+            confirmed_keys.add(key)
+        else:
+            log.info(f"  {name[:35]:35s} → no LinkedIn — skipping")
 
-        if batch_start + LINKEDIN_BATCH_SIZE < len(need_lookup):
-            time.sleep(3)
+        # Pace calls to stay under 50k input tokens/minute on Haiku
+        time.sleep(10)
 
     return results
 
@@ -675,6 +644,12 @@ def main():
         ]
         log.info(f"  {len(fresh_funding)} are new (never sent before).")
         save_founders(fresh_funding)
+
+        # Pause before LinkedIn lookups so the search call's token usage clears
+        # the 50k/min rate limit window before we start more API calls.
+        if fresh_funding:
+            log.info(f"  Pausing {RATE_LIMIT_SLEEP}s to reset rate limit window...")
+            time.sleep(RATE_LIMIT_SLEEP)
 
         log.info(f"  Finding LinkedIn for up to {len(fresh_funding)} funding founders...")
         confirmed += enrich_and_filter(fresh_funding, already_confirmed=confirmed)
