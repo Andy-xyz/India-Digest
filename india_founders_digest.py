@@ -57,7 +57,7 @@ EMAIL_SENDER       = os.getenv("EMAIL_SENDER")
 EMAIL_PASSWORD     = os.getenv("EMAIL_PASSWORD")
 EMAIL_RECIPIENT    = os.getenv("EMAIL_RECIPIENT", "Andyseac@gmail.com")
 RUNNING_IN_CLOUD   = os.getenv("RUNNING_IN_CLOUD", "false").lower() == "true"
-SEARCH_MODEL       = "claude-haiku-4-5-20251001"  # Haiku is ~15x cheaper than Opus for search/extraction
+SEARCH_MODEL       = "claude-sonnet-4-6"  # Sonnet: reliable JSON extraction, ~5x cheaper than Opus
 LINKEDIN_MODEL     = "claude-haiku-4-5-20251001"
 RATE_LIMIT_SLEEP   = 65  # seconds to wait after a large search call before the next API call
 MAX_RETRIES        = 3
@@ -645,11 +645,10 @@ def main():
         log.info(f"  {len(fresh_funding)} are new (never sent before).")
         save_founders(fresh_funding)
 
-        # Pause before LinkedIn lookups so the search call's token usage clears
-        # the 50k/min rate limit window before we start more API calls.
-        if fresh_funding:
-            log.info(f"  Pausing {RATE_LIMIT_SLEEP}s to reset rate limit window...")
-            time.sleep(RATE_LIMIT_SLEEP)
+        # Always pause after the search call — it consumes tokens even when it
+        # finds 0 founders, and Round 3 firing immediately causes a 429.
+        log.info(f"  Pausing {RATE_LIMIT_SLEEP}s to reset rate limit window...")
+        time.sleep(RATE_LIMIT_SLEEP)
 
         log.info(f"  Finding LinkedIn for up to {len(fresh_funding)} funding founders...")
         confirmed += enrich_and_filter(fresh_funding, already_confirmed=confirmed)
