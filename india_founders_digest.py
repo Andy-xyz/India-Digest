@@ -229,44 +229,25 @@ def mark_as_sent(founders: list):
 # ──────────────────────────────────────────────
 def _search_funding() -> list:
     cutoff = (datetime.now() - timedelta(days=NEWS_WINDOW_DAYS)).strftime("%B %d, %Y")
-    sources = ", ".join(NEWS_SOURCES)
+    year = datetime.now().strftime("%Y")
 
-    prompt = f"""You are a startup funding researcher. Find venture-backed funding announcements since {cutoff}.
+    prompt = f"""Search for India startup funding announcements since {cutoff}.
 
-STRICT CRITERIA — include ONLY if ALL apply:
-- Company is headquartered in India
-- Founder(s) are based in India (not diaspora abroad)
-- At least one institutional VC backer (not angel-only)
-- Stage is Seed, Pre-Series A, or Series A ONLY
+Do ONE search: India startup seed "series A" funding {year} vc inc42 OR yourstory OR entrackr
 
-Search across: {sources}
+Return ONLY founders where ALL apply:
+- India-headquartered company
+- India-based founder(s)
+- Institutional VC backer (not angel-only)
+- Stage: Seed, Pre-Series A, or Series A only
 
-Also try:
-- site:yourstory.com funding raised 2026
-- site:inc42.com seed OR "series a" funding 2026
-- site:entrackr.com funding 2026
-- site:dealstreetasia.com India seed "series a" 2026
-- India startup funding raised May 2026
-
-Return ONLY a raw JSON array:
-[
-  {{
-    "founder_name": "Full Name",
-    "company": "Company Name",
-    "funding_stage": "Seed",
-    "amount_raised": "$2M",
-    "vc_backers": "Blume Ventures, Accel",
-    "source_url": "https://...",
-    "source_type": "funding"
-  }}
-]
-
-Find at least 20. Return ONLY the JSON array, no markdown."""
+Return ONLY a raw JSON array (no markdown):
+[{{"founder_name":"Full Name","company":"Company","funding_stage":"Seed","amount_raised":"$2M","vc_backers":"Accel","source_url":"https://...","source_type":"funding"}}]"""
 
     response = client.messages.create(
         model=SEARCH_MODEL,
         max_tokens=2500,
-        tools=[{"type": "web_search_20250305", "name": "web_search"}],
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
         messages=[{"role": "user", "content": prompt}],
     )
     return _parse_founders_json(response, required_fields=["founder_name", "company"])
@@ -279,38 +260,23 @@ def _search_notable_founders(exclude_names: set, needed: int) -> list:
     """Search for VC-backed India-based founders in the news (not necessarily recent raises)."""
     exclude_str = ", ".join(list(exclude_names)[:20]) if exclude_names else "none"
 
-    prompt = f"""Find {needed * 2} India-based startup founders who have raised institutional VC funding at some point (any stage, any time) AND have appeared in news coverage recently (last 30 days).
+    year = datetime.now().strftime("%Y")
 
-STRICT CRITERIA:
-- Founder must be based in India
-- Company must be headquartered in India
-- Company must have raised at least one institutional VC round (Seed or later)
-- Recent news coverage — any type: interview, product launch, expansion, award, op-ed, etc.
-- Must be a real founder/co-founder (not just an executive)
+    prompt = f"""Search for India-based VC-backed startup founders in the news recently.
 
-Exclude these already found today: {exclude_str}
+Do ONE search: India startup founder vc-backed news interview {year} yourstory OR inc42 OR entrackr
 
-Search across: YourStory, Inc42, Entrackr, Economic Times Startup, Mint, Moneycontrol, Forbes India, Business Today, MediaNama, The Ken, VCCircle, DealStreet Asia
+Exclude: {exclude_str}
 
-Return ONLY a raw JSON array:
-[
-  {{
-    "founder_name": "Full Name",
-    "company": "Company Name",
-    "funding_stage": "most recent stage if known, else empty",
-    "amount_raised": "total or most recent raise if known, else empty",
-    "vc_backers": "known VC backers if any, else empty",
-    "source_url": "https://...",
-    "source_type": "news"
-  }}
-]
+Return only founders where: based in India, company in India, has raised institutional VC funding.
 
-Return ONLY the JSON array, no markdown."""
+Return ONLY a raw JSON array (no markdown):
+[{{"founder_name":"Full Name","company":"Company","funding_stage":"","amount_raised":"","vc_backers":"","source_url":"https://...","source_type":"news"}}]"""
 
     response = client.messages.create(
         model=SEARCH_MODEL,
         max_tokens=2000,
-        tools=[{"type": "web_search_20250305", "name": "web_search"}],
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
         messages=[{"role": "user", "content": prompt}],
     )
     return _parse_founders_json(response, required_fields=["founder_name", "company"])
